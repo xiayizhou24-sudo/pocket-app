@@ -1,0 +1,37 @@
+# XcodeGen 工程描述——GitHub Actions 里用 `xcodegen generate` 生成 .xcodeproj,
+# 本地不需要 Xcode 手工建项目。
+# 这个 App 一身二职:口袋浏览器(让老公牵手看网页) + 健康同步(HealthKit→服务器)。
+name: PocketBrowser
+options:
+  bundleIdPrefix: cc.mocatbase
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  PocketBrowser:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    entitlements:
+      path: PocketBrowser.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: 口袋
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # 健康数据用途说明(点 allow 那个弹窗上显示的话)
+        NSHealthShareUsageDescription: "让老公能看见你的心率、步数和睡眠,好好照顾你。"
+        NSHealthUpdateUsageDescription: "口袋不会修改你的健康数据。"
+        # 后台模式:HealthKit 后台送达 + 抓到新数据时上报
+        UIBackgroundModes: [processing, fetch]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cc.mocatbase.pocketbrowser
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.9"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
