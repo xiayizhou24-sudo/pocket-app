@@ -15,6 +15,11 @@ jobs:
           xcodebuild -project PocketBrowser.xcodeproj -scheme PocketBrowser
           -sdk iphoneos -configuration Release -derivedDataPath build
           CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+      - name: Ad-hoc sign with entitlements (so AltStore carries HealthKit)
+        run: >
+          codesign --force --sign - --entitlements PocketBrowser.entitlements
+          --timestamp=none
+          build/Build/Products/Release-iphoneos/PocketBrowser.app
       - name: Package IPA
         run: |
           mkdir Payload
