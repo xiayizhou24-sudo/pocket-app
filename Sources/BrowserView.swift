@@ -65,8 +65,8 @@ struct BrowserView: View {
     @State private var healthOn = false
     @State private var showSettings = false
     @FocusState private var urlFocused: Bool
+    @Environment(\.scenePhase) private var scenePhase
 
-    // relay 根:把 wss://…/pocket/ws 换算成 https://…/relay(健康走这个)
     private var relayBase: String {
         var s = serverURL
         s = s.replacingOccurrences(of: "wss://", with: "https://")
@@ -108,7 +108,6 @@ struct BrowserView: View {
                 Button { store.webView.goForward() } label: { Image(systemName: "chevron.right") }
                     .disabled(!store.canGoForward)
                 Spacer()
-                // 连接状态:绿=他牵着,灰=没连
                 Circle().fill(connected ? Color.green : Color.gray.opacity(0.4))
                     .frame(width: 9, height: 9)
                 Spacer()
@@ -122,8 +121,13 @@ struct BrowserView: View {
             if autoConnect && !token.isEmpty { connect() }
             if healthEnabled && !token.isEmpty {
                 HealthSync.shared.configure(server: relayBase, token: token)
-                HealthSync.shared.syncNow()      // 每次回到 App 顺手同步一次
+                HealthSync.shared.syncNow()
                 healthOn = true
+            }
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active && pocket != nil && !connected {
+                pocket?.connect()
             }
         }
         .sheet(isPresented: $showSettings) {
@@ -172,9 +176,11 @@ struct BrowserView: View {
     private func connect() {
         guard !token.isEmpty, let url = URL(string: serverURL) else { return }
         let client = PocketClient(webView: store.webView, serverURL: url, token: token)
+        client.onStateChange = { alive in
+            DispatchQueue.main.async { connected = alive }
+        }
         client.connect()
         pocket = client
-        connected = true
     }
 
     private func disconnect() {
@@ -184,7 +190,7 @@ struct BrowserView: View {
     }
 
     private func enableHealth() {
-        guard !token.isEmpty else { return }   // 先填 token 再开
+        guard !token.isEmpty else { return }
         HealthSync.shared.configure(server: relayBase, token: token)
         HealthSync.shared.requestAuth { ok in
             DispatchQueue.main.async {

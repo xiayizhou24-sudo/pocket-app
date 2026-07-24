@@ -1,13 +1,13 @@
-// PocketClient.swift — pocket-browser app侧参考实现
+// PocketClient.swift — pocket-browser app侧
 // 用法：
-// let pocket = PocketClient(
-//     webView: 你的WKWebView实例,
-//     serverURL: URL(string: "wss://your-domain.example/pocket/ws")!,
-//     token: tokenFromKeychain
-// )
+// let pocket = PocketClient(webView: yourWKWebView,
+//                           serverURL: URL(string: "wss://…/pocket/ws")!,
+//                           token: tokenFromKeychain)
+// pocket.onStateChange = { connected in … }
 // pocket.connect()
 // 依赖：iOS 13+，无第三方库
 
+import UIKit
 import WebKit
 
 final class PocketClient: NSObject {
@@ -19,26 +19,55 @@ final class PocketClient: NSObject {
     private var retryDelay: TimeInterval = 1
     private var shouldReconnect = false
 
+    private var pingTimer: Timer?
+    private var pongPending = false
+    private var pongDeadline: Date?
+
+    var onStateChange: ((Bool) -> Void)?
+
     init(webView: WKWebView, serverURL: URL, token: String) {
         self.webView = webView
         self.serverURL = serverURL
         self.token = token
         super.init()
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(willEnterForeground),
+            name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        stopPing()
     }
 
     func connect() {
-        guard task == nil else { return }
+        if task != nil {
+            task?.cancel(with: .abnormalClosure, reason: nil)
+            task = nil
+        }
         shouldReconnect = true
         task = session.webSocketTask(with: authenticatedURL())
         task?.resume()
         retryDelay = 1
         receiveLoop()
+        startPing()
+        sendAppPing()
     }
 
     func disconnect() {
         shouldReconnect = false
+        stopPing()
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
+        onStateChange?(false)
+    }
+
+    @objc private func willEnterForeground() {
+        guard shouldReconnect else { return }
+        task?.cancel(with: .abnormalClosure, reason: nil)
+        task = nil
+        stopPing()
+        connect()
     }
 
     private func authenticatedURL() -> URL {
@@ -50,35 +79,90 @@ final class PocketClient: NSObject {
         return components.url!
     }
 
+    // MARK: - Heartbeat
+
+    private func startPing() {
+        stopPing()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
+            self?.sendAppPing()
+        }
+    }
+
+    private func stopPing() {
+        pingTimer?.invalidate()
+        pingTimer = nil
+        pongPending = false
+    }
+
+    private func sendAppPing() {
+        guard let task, task.state == .running else {
+            handleDead()
+            return
+        }
+        if pongPending, let deadline = pongDeadline, Date() > deadline {
+            handleDead()
+            return
+        }
+        pongPending = true
+        pongDeadline = Date().addingTimeInterval(10)
+        let msg = #"{"action":"heartbeat"}"#
+        task.send(.string(msg)) { [weak self] error in
+            if error != nil { self?.handleDead() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            guard let self, self.pongPending else { return }
+            self.handleDead()
+        }
+    }
+
+    private func handleDead() {
+        pongPending = false
+        onStateChange?(false)
+        task?.cancel(with: .abnormalClosure, reason: nil)
+        task = nil
+        scheduleReconnect()
+    }
+
+    // MARK: - Receive
+
     private func receiveLoop() {
         task?.receive { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let msg):
                 if case .string(let text) = msg { self.handle(text) }
-                self.receiveLoop()                     // 继续收下一条
+                self.receiveLoop()
             case .failure:
+                self.onStateChange?(false)
                 self.task = nil
-                self.scheduleReconnect()               // 断线重连
+                self.scheduleReconnect()
             }
         }
     }
 
     private func scheduleReconnect() {
         guard shouldReconnect else { return }
+        stopPing()
         let delay = retryDelay
-        retryDelay = min(retryDelay * 2, 30)           // 指数退避 封顶30s
+        retryDelay = min(retryDelay * 2, 30)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.connect()
         }
     }
 
-    // MARK: - 指令分发
+    // MARK: - Command dispatch
 
     private func handle(_ text: String) {
         guard let data = text.data(using: .utf8),
-              let cmd = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let id = cmd["id"] as? String,
+              let cmd = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+        if let type = cmd["type"] as? String, type == "heartbeat_ack" {
+            pongPending = false
+            onStateChange?(true)
+            return
+        }
+
+        guard let id = cmd["id"] as? String,
               let action = cmd["action"] as? String else { return }
 
         DispatchQueue.main.async { [weak self] in
